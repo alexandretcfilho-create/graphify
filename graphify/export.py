@@ -684,6 +684,38 @@ def _adopt_pre_manifest_notes(out: Path) -> set[str]:
     return {p.name for p in candidates if _is_graphify_note(p)}
 
 
+def _vault_prefix(output_dir: str | Path, vault_root: str | Path | None) -> str:
+    """Path of ``output_dir`` relative to the Obsidian vault root, POSIX-style.
+
+    Obsidian resolves canvas ``file`` entries and path-qualified wikilinks from
+    the vault root, so an export written into a subfolder of a larger vault
+    (e.g. ``~/vault/graphify/my-project``) needs every reference prefixed with
+    that subfolder. Returns ``""`` when there is no vault root or the export
+    directory IS the vault root.
+    """
+    if vault_root is None:
+        return ""
+    out = Path(output_dir).expanduser().resolve()
+    root = Path(vault_root).expanduser().resolve()
+    try:
+        rel = out.relative_to(root)
+    except ValueError:
+        raise ValueError(
+            f"Obsidian export dir {out} is not inside vault root {root}"
+        ) from None
+    prefix = rel.as_posix()
+    if prefix == ".":
+        return ""
+    # These characters terminate or alter a wikilink target, so a link through
+    # such a folder would silently point somewhere else.
+    if re.search(r'[|#^\[\]]', prefix):
+        raise ValueError(
+            f"Obsidian export path {prefix!r} contains a character that breaks "
+            f"wikilinks (| # ^ [ ])"
+        )
+    return prefix
+
+
 def _obsidian_safe_stem(label: str, limit: int = 200) -> str:
     """Filename stem for an Obsidian note / canvas card from a node label.
 
@@ -757,6 +789,7 @@ def to_obsidian(
     output_dir: str,
     community_labels: dict[int, str] | None = None,
     cohesion: dict[int, float] | None = None,
+    vault_root: str | None = None,
 ) -> int:
     """Export graph as an Obsidian vault - one .md file per node with [[wikilinks]],
     plus one _COMMUNITY_name.md overview note per community (sorted to top by underscore prefix).
@@ -764,10 +797,22 @@ def to_obsidian(
     Open the output directory as a vault in Obsidian to get an interactive
     graph view with community colors and full-text search over node metadata.
 
+    When ``vault_root`` is given, ``output_dir`` is a subfolder of that vault
+    (one vault shared by several projects): wikilinks are path-qualified so
+    same-named nodes of different projects don't resolve to each other, and
+    the ``.obsidian/graph.json`` colour config is not written, since Obsidian
+    only reads it at the vault root.
+
     Returns the number of node notes + community notes written.
     """
     out = Path(output_dir)
+    _prefix = _vault_prefix(out, vault_root)
     out.mkdir(parents=True, exist_ok=True)
+
+    def _link(stem: str) -> str:
+        if not _prefix:
+            return f"[[{stem}]]"
+        return f"[[{_prefix}/{stem}|{stem}]]"
 
     # #1506: when the export target is an existing Obsidian vault (a user pointed
     # --obsidian-dir at one), we must not clobber the user's own notes or their
@@ -887,7 +932,7 @@ def to_obsidian(
                 neighbor_label = node_filename[neighbor]
                 relation = edata.get("relation", "")
                 confidence = edata.get("confidence", "EXTRACTED")
-                lines.append(f"- [[{neighbor_label}]] - `{relation}` [{confidence}]")
+                lines.append(f"- {_link(neighbor_label)} - `{relation}` [{confidence}]")
             lines.append("")
 
         # Inline tags at bottom of note body (for Obsidian tag panel)
@@ -993,7 +1038,7 @@ def to_obsidian(
             node_label = node_filename[node_id]
             ftype = data.get("file_type", "")
             source = data.get("source_file", "")
-            entry = f"- [[{node_label}]]"
+            entry = f"- {_link(node_label)}"
             if ftype:
                 entry += f" - {ftype}"
             if source:
@@ -1020,7 +1065,7 @@ def to_obsidian(
                     f"{_COMMUNITY_PREFIX}"
                     f"{_obsidian_safe_stem(_community_name(other_cid), _community_stem_limit)}"
                 )
-                lines.append(f"- {edge_count} edge{'s' if edge_count != 1 else ''} to [[{other_fname}]]")
+                lines.append(f"- {edge_count} edge{'s' if edge_count != 1 else ''} to {_link(other_fname)}")
             lines.append("")
 
         # Top bridge nodes - highest degree nodes that connect to other communities
@@ -1036,7 +1081,7 @@ def to_obsidian(
             for node_id, degree, reach in top_bridges:
                 node_label = node_filename[node_id]
                 lines.append(
-                    f"- [[{node_label}]] - degree {degree}, connects to {reach} "
+                    f"- {_link(node_label)} - degree {degree}, connects to {reach} "
                     f"{'community' if reach == 1 else 'communities'}"
                 )
 
@@ -1060,7 +1105,8 @@ def to_obsidian(
             for cid, label in sorted((community_labels or {}).items())
         ]
     }
-    _owned_write(".obsidian/graph.json", json.dumps(graph_config, indent=2))
+    if not _prefix:
+        _owned_write(".obsidian/graph.json", json.dumps(graph_config, indent=2))
 
     # #1896: prune notes for nodes that dropped out of the graph. Only files the
     # manifest says graphify owns are candidates, and anything written or skipped
@@ -1110,13 +1156,19 @@ def to_canvas(
     output_path: str,
     community_labels: dict[int, str] | None = None,
     node_filenames: dict[str, str] | None = None,
+    vault_root: str | None = None,
 ) -> None:
     """Export graph as an Obsidian Canvas file - communities as groups, nodes as cards.
 
     Generates a structured layout: communities arranged in a grid, nodes within
     each community arranged in rows. Edges shown between connected nodes.
     Opens in Obsidian as an infinite canvas with community groupings visible.
+
+    Card ``file`` paths are vault-root-relative in Obsidian; pass ``vault_root``
+    when the canvas sits in a subfolder of the vault so the cards resolve.
     """
+    _prefix = _vault_prefix(Path(output_path).parent, vault_root)
+    _file_prefix = f"{_prefix}/" if _prefix else ""
     # Obsidian canvas color codes (cycle through for communities)
     CANVAS_COLORS = ["1", "2", "3", "4", "5", "6"]  # red, orange, yellow, green, cyan, purple
 
@@ -1252,7 +1304,7 @@ def to_canvas(
             canvas_nodes.append({
                 "id": f"n_{node_id}",
                 "type": "file",
-                "file": f"{fname}.md",
+                "file": f"{_file_prefix}{fname}.md",
                 "x": nx_x,
                 "y": nx_y,
                 "width": 180,

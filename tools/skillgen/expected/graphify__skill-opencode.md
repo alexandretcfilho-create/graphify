@@ -558,6 +558,7 @@ If `--obsidian` was given:
 ```bash
 graphify export obsidian
 # or with custom dir: graphify export obsidian --dir ~/vaults/my-project
+# or into a subfolder of one shared vault: graphify export obsidian --dir ~/vault/graphify/my-project --vault-root ~/vault
 ```
 
 Generate the HTML graph (always, unless `--no-viz`):

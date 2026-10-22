@@ -3186,7 +3186,7 @@ def dispatch_command(cmd: str) -> None:
             print("  html      [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz]", file=sys.stderr)
             print("  callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]", file=sys.stderr)
             print("            [--lang auto|zh-CN|en] [--max-sections N] [--diagram-scale N]", file=sys.stderr)
-            print("  obsidian  [--graph PATH] [--labels PATH] [--dir PATH]", file=sys.stderr)
+            print("  obsidian  [--graph PATH] [--labels PATH] [--dir PATH] [--vault-root PATH]", file=sys.stderr)
             print("  wiki      [--graph PATH] [--labels PATH]", file=sys.stderr)
             print("  svg       [--graph PATH] [--labels PATH]", file=sys.stderr)
             print("  graphml   [--graph PATH]", file=sys.stderr)
@@ -3215,6 +3215,7 @@ def dispatch_command(cmd: str) -> None:
         node_limit = 5000
         no_viz = False
         obsidian_dir = Path(_GRAPHIFY_OUT) / "obsidian"
+        vault_root: str | None = None
         # Shared push-connection settings for the graph-database sinks (neo4j,
         # falkordb), parsed from the generic --push/--user/--password flags below.
         push_uri: str | None = None
@@ -3276,6 +3277,8 @@ def dispatch_command(cmd: str) -> None:
                 no_viz = True; i += 1
             elif a == "--dir" and i + 1 < len(args):
                 obsidian_dir = Path(args[i + 1]); i += 2
+            elif a == "--vault-root" and i + 1 < len(args):
+                vault_root = args[i + 1]; i += 2
             elif a == "--push" and i + 1 < len(args):
                 push_uri = args[i + 1]; i += 2
             elif a == "--user" and i + 1 < len(args):
@@ -3469,13 +3472,21 @@ def dispatch_command(cmd: str) -> None:
 
         elif subcmd == "obsidian":
             from graphify.export import to_obsidian as _to_obsidian, to_canvas as _to_canvas
-            n = _to_obsidian(G, communities, str(obsidian_dir),
-                             community_labels=labels or None, cohesion=cohesion or None)
+            try:
+                n = _to_obsidian(G, communities, str(obsidian_dir),
+                                 community_labels=labels or None, cohesion=cohesion or None,
+                                 vault_root=vault_root)
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                sys.exit(1)
             print(f"Obsidian vault: {n} notes in {obsidian_dir}/")
             _to_canvas(G, communities, str(obsidian_dir / "graph.canvas"),
-                       community_labels=labels or None)
+                       community_labels=labels or None, vault_root=vault_root)
             print(f"Canvas: {obsidian_dir}/graph.canvas")
-            print(f"Open {obsidian_dir}/ as a vault in Obsidian.")
+            if vault_root:
+                print(f"Open {vault_root}/ as a vault in Obsidian.")
+            else:
+                print(f"Open {obsidian_dir}/ as a vault in Obsidian.")
 
         elif subcmd == "wiki":
             from graphify.wiki import to_wiki as _to_wiki
